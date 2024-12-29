@@ -1,19 +1,16 @@
 package dev.bluefalcon
 
+import kotlinx.cinterop.ObjCSignatureOverride
 import platform.CoreBluetooth.*
 import platform.Foundation.NSError
 import platform.darwin.NSObject
 
-actual class PeripheralDelegate actual constructor(
+class PeripheralDelegate constructor(
     private val blueFalcon: BlueFalcon
 ) : NSObject(), CBPeripheralDelegateProtocol {
-
-    override fun peripheral(
-        peripheral: CBPeripheral,
-        didDiscoverServices: NSError?
-    ) {
+    override fun peripheral(peripheral: CBPeripheral, didDiscoverServices: NSError?) {
         if (didDiscoverServices != null) {
-            println("Error with service discovery ${didDiscoverServices}")
+            println("Error with service discovery $didDiscoverServices")
         } else {
             val device = BluetoothPeripheral(peripheral, rssiValue = null)
             blueFalcon.delegates.forEach {
@@ -27,13 +24,9 @@ actual class PeripheralDelegate actual constructor(
         }
     }
 
-    override fun peripheral(
-        peripheral: CBPeripheral,
-        didDiscoverCharacteristicsForService: CBService,
-        error: NSError?
-    ) {
+    override fun peripheral(peripheral: CBPeripheral, didDiscoverCharacteristicsForService: CBService, error: NSError?) {
         if (error != null) {
-            println("Error with characteristic discovery ${didDiscoverCharacteristicsForService}")
+            println("Error with characteristic discovery $didDiscoverCharacteristicsForService")
         }
         val device = BluetoothPeripheral(peripheral, rssiValue = null)
         blueFalcon.delegates.forEach {
@@ -44,20 +37,17 @@ actual class PeripheralDelegate actual constructor(
         }
     }
 
+    @ObjCSignatureOverride
     @Suppress("CONFLICTING_OVERLOADS")
-    override fun peripheral(
-        peripheral: CBPeripheral,
-        didUpdateValueForCharacteristic: CBCharacteristic,
-        error: NSError?
-    ) {
+    override fun peripheral(peripheral: CBPeripheral, didUpdateValueForCharacteristic: CBCharacteristic, error: NSError?) {
         if (error != null) {
-            println("Error with characteristic update ${error}")
+            println("Error with characteristic update $error")
         }
         println("didUpdateValueForCharacteristic")
         val device = BluetoothPeripheral(peripheral, rssiValue = null)
         val characteristic = BluetoothCharacteristic(didUpdateValueForCharacteristic)
         blueFalcon.delegates.forEach {
-            it.didCharacteristcValueChanged(
+            it.didCharacteristicValueChanged(
                 device,
                 characteristic
             )
@@ -68,11 +58,13 @@ actual class PeripheralDelegate actual constructor(
         println("didUpdateValueForDescriptor ${didUpdateValueForDescriptor.value}")
     }
 
+    @ObjCSignatureOverride
     @Suppress("CONFLICTING_OVERLOADS")
     override fun peripheral(peripheral: CBPeripheral, didDiscoverDescriptorsForCharacteristic: CBCharacteristic, error: NSError?) {
         println("didDiscoverDescriptorsForCharacteristic")
     }
 
+    @ObjCSignatureOverride
     @Suppress("CONFLICTING_OVERLOADS")
     override fun peripheral(peripheral: CBPeripheral, didWriteValueForCharacteristic: CBCharacteristic, error: NSError?) {
         if (error != null) {

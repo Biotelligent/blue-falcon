@@ -3,8 +3,8 @@ package dev.bluefalcon
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import kotlinx.coroutines.flow.MutableStateFlow
-import java.nio.charset.Charset
 
+@Suppress("DEPRECATION")
 actual class BluetoothCharacteristic(val characteristic: BluetoothGattCharacteristic) {
     actual val name: String?
         get() = characteristic.uuid.toString()
@@ -13,7 +13,7 @@ actual class BluetoothCharacteristic(val characteristic: BluetoothGattCharacteri
     actual val descriptors: List<BluetoothCharacteristicDescriptor>
         get() = characteristic.descriptors
 
-    internal actual val _descriptorsFlow = MutableStateFlow<List<BluetoothCharacteristicDescriptor>>(emptyList())
+    internal actual val descriptorsFlow = MutableStateFlow<List<BluetoothCharacteristicDescriptor>>(emptyList())
 }
 
 actual typealias BluetoothCharacteristicDescriptor = BluetoothGattDescriptor

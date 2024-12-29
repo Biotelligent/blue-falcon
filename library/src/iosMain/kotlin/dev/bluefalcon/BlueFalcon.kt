@@ -2,14 +2,25 @@ package dev.bluefalcon
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import platform.CoreBluetooth.*
-import platform.Foundation.*
-import platform.darwin.NSObject
+import platform.CoreBluetooth.CBCentralManager
+import platform.CoreBluetooth.CBCentralManagerScanOptionAllowDuplicatesKey
+import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
+import platform.CoreBluetooth.CBCharacteristicWriteWithoutResponse
+import platform.CoreBluetooth.CBManagerState
+import platform.CoreBluetooth.CBManagerStatePoweredOff
+import platform.CoreBluetooth.CBManagerStatePoweredOn
+import platform.CoreBluetooth.CBManagerStateResetting
+import platform.CoreBluetooth.CBManagerStateUnauthorized
+import platform.CoreBluetooth.CBManagerStateUnknown
+import platform.CoreBluetooth.CBManagerStateUnsupported
+import platform.CoreBluetooth.CBUUID
+import platform.Foundation.NSData
+import platform.Foundation.NSString
+import platform.Foundation.NSUTF8StringEncoding
+import platform.Foundation.create
+import platform.Foundation.dataUsingEncoding
 
-expect class BluetoothPeripheralManager(blueFalcon: BlueFalcon): CBCentralManagerDelegateProtocol, NSObject
-expect class PeripheralDelegate(blueFalcon: BlueFalcon)
-
+@OptIn(kotlinx.cinterop.BetaInteropApi::class)
 actual class BlueFalcon actual constructor(
     private val context: ApplicationContext,
     private val serviceUUID: String?
@@ -19,17 +30,17 @@ actual class BlueFalcon actual constructor(
     private val centralManager: CBCentralManager
     private val bluetoothPeripheralManager = BluetoothPeripheralManager(this)
     actual var isScanning: Boolean = false
-
     actual val scope = CoroutineScope(Dispatchers.Default)
-    internal actual val _peripherals = MutableStateFlow<Set<BluetoothPeripheral>>(emptySet())
-    actual val peripherals: NativeFlow<Set<BluetoothPeripheral>> = _peripherals.toNativeType(scope)
+    val scannedPeripheralList = ScannedPeripheralList()
+    internal actual val peripheralsSet = scannedPeripheralList.peripherals
+    actual val peripherals: NativeFlow<Set<BluetoothPeripheral>> = peripheralsSet.toNativeType(scope)
 
     init {
         centralManager = CBCentralManager(bluetoothPeripheralManager, null)
     }
 
     actual fun connect(bluetoothPeripheral: BluetoothPeripheral, autoConnect: Boolean) {
-        //auto connect is ignored due to not needing it in iOS
+        // auto connect is ignored due to not needing it in iOS
         centralManager.connectPeripheral(bluetoothPeripheral.bluetoothDevice, null)
     }
 
@@ -37,74 +48,129 @@ actual class BlueFalcon actual constructor(
         centralManager.cancelPeripheralConnection(bluetoothPeripheral.bluetoothDevice)
     }
 
-    @Throws(
-        BluetoothUnknownException::class,
-        BluetoothResettingException::class,
-        BluetoothUnsupportedException::class,
-        BluetoothPermissionException::class,
-        BluetoothNotEnabledException::class
-    )
-    actual fun scan() {
-        isScanning = true
-        when (centralManager.state) {
-            CBManagerStateUnknown -> throw BluetoothUnknownException()
-            CBManagerStateResetting -> throw BluetoothResettingException()
-            CBManagerStateUnsupported -> throw BluetoothUnsupportedException()
-            CBManagerStateUnauthorized -> throw BluetoothPermissionException()
-            CBManagerStatePoweredOff -> throw BluetoothNotEnabledException()
-            CBManagerStatePoweredOn -> {
-                if (serviceUUID != null) {
-                    val serviceCBUUID = CBUUID.UUIDWithString(serviceUUID)
-                    centralManager.scanForPeripheralsWithServices(listOf(serviceCBUUID), mapOf(CBCentralManagerScanOptionAllowDuplicatesKey to true) )
-                } else {
-                    centralManager.scanForPeripheralsWithServices(null, mapOf(CBCentralManagerScanOptionAllowDuplicatesKey to true) )
-                }
-            }
-        }
+    actual fun clearScanResults() {
+        scannedPeripheralList.clear()
     }
 
     actual fun stopScanning() {
         isScanning = false
+        scannedPeripheralList.stop()
         centralManager.stopScan()
     }
 
-    actual fun readCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic
-    ) {
+    actual fun isBluetoothEnabled(): Boolean {
+        return when (centralManager.state) {
+            CBManagerStateUnsupported, CBManagerStatePoweredOff -> false
+            else -> true
+        }
+    }
+
+    actual fun isBluetoothPermitted(): Boolean {
+        return when (centralManager.state) {
+            CBManagerStateUnauthorized -> false
+            else -> true
+        }
+    }
+
+    var storedServiceUuid: String? = null
+    var storedDeviceName: String? = null
+    var storedThrottleMillis: Long = 750L
+    var storedRemoveInactiveAfterMillis: Long = 500L
+    var wasScanRequested = false
+
+    fun resumeScanning(state: CBManagerState) {
+        if (wasScanRequested && !isScanning) {
+            log("resuming scanning w previous settings")
+            wasScanRequested = false
+            tryStartScan(serviceUuid = storedServiceUuid, throttleMillis = storedThrottleMillis, removeInactiveAfterMillis = storedRemoveInactiveAfterMillis, state)
+        }
+    }
+
+    actual fun startScan(serviceUuid: String?, deviceName: String?, throttleMillis: Long, removeInactiveAfterMillis: Long): Boolean {
+        log("BT startScan request for serviceUuid $serviceUuid isScanning=$isScanning")
+        storedServiceUuid = serviceUuid
+        storedDeviceName = deviceName
+        storedThrottleMillis = throttleMillis
+        storedRemoveInactiveAfterMillis = removeInactiveAfterMillis
+        wasScanRequested = true
+
+        if (isScanning) {
+            stopScanning()
+        }
+        clearScanResults()
+
+        val isEnabled = isBluetoothEnabled()
+        val isPermitted = isBluetoothPermitted()
+        if (!isPermitted || !isEnabled) {
+            log("BT startScan request isPermitted=$isPermitted isEnabled=$isEnabled")
+            return false
+        }
+
+        log("BT startScan checking state")
+        when (centralManager.state) {
+            CBManagerStateUnsupported -> {
+                log("Bluetooth is not supported on this device")
+                return false
+            }
+            CBManagerStateUnauthorized -> {
+                log("Bluetooth is not permitted")
+                return false
+            }
+            CBManagerStatePoweredOff -> {
+                log("Bluetooth is off")
+                return false
+            }
+            CBManagerStateUnknown,
+            CBManagerStateResetting,
+            CBManagerStatePoweredOn -> {
+                log("Bluetooth state is powered on ${centralManager.state} - assume that resume is required")
+                tryStartScan(serviceUuid, throttleMillis, removeInactiveAfterMillis, centralManager.state)
+            }
+        }
+        return isScanning
+    }
+
+    private fun tryStartScan(serviceUuid: String?, throttleMillis: Long, removeInactiveAfterMillis: Long, state: CBManagerState) {
+        log("BT tryStartScan enter from state $state isscanning = $isScanning")
+        scannedPeripheralList.start(throttleMillis = throttleMillis, removeDevicesAfterMillis = removeInactiveAfterMillis)
+        val scanServiceUuid: String? = serviceUuid ?: serviceUUID
+        try {
+            if (scanServiceUuid != null) {
+                val serviceCBUUID = CBUUID.UUIDWithString(scanServiceUuid)
+                centralManager.scanForPeripheralsWithServices(listOf(serviceCBUUID), mapOf(CBCentralManagerScanOptionAllowDuplicatesKey to SCAN_ALLOW_DUPLICATES))
+                isScanning = true
+            } else {
+                centralManager.scanForPeripheralsWithServices(null, mapOf(CBCentralManagerScanOptionAllowDuplicatesKey to SCAN_ALLOW_DUPLICATES))
+            }
+            isScanning = state == CBManagerStatePoweredOn
+        } catch (e: Exception) {
+            log("BT tryStartScan exception ${e.message}")
+            isScanning = false
+        }
+        log("BT tryStartScan exit isscanning = $isScanning")
+    }
+
+    actual fun scan(): Boolean {
+        return startScan(serviceUUID, null)
+    }
+
+    actual fun readCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic) {
         bluetoothPeripheral.bluetoothDevice.readValueForCharacteristic(bluetoothCharacteristic.characteristic)
     }
 
-    actual fun notifyCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        notify: Boolean
-    ) {
+    actual fun notifyCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, notify: Boolean) {
         bluetoothPeripheral.bluetoothDevice.setNotifyValue(notify, bluetoothCharacteristic.characteristic)
     }
 
-    actual fun indicateCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        indicate: Boolean
-    ) {
+    actual fun indicateCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, indicate: Boolean) {
         notifyCharacteristic(bluetoothPeripheral, bluetoothCharacteristic, indicate)
     }
 
-    actual fun notifyAndIndicateCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        enable: Boolean
-    ) {
+    actual fun notifyAndIndicateCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, enable: Boolean) {
         notifyCharacteristic(bluetoothPeripheral, bluetoothCharacteristic, enable)
     }
 
-    actual fun writeCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        value: String,
-        writeType: Int?
-    ) {
+    actual fun writeCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, value: String, writeType: Int?) {
         sharedWriteCharacteristic(
             bluetoothPeripheral,
             bluetoothCharacteristic,
@@ -113,12 +179,7 @@ actual class BlueFalcon actual constructor(
         )
     }
 
-    actual fun writeCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        value: ByteArray,
-        writeType: Int?
-    ) {
+    actual fun writeCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, value: ByteArray, writeType: Int?) {
         sharedWriteCharacteristic(
             bluetoothPeripheral,
             bluetoothCharacteristic,
@@ -127,12 +188,7 @@ actual class BlueFalcon actual constructor(
         )
     }
 
-    actual fun writeCharacteristicWithoutEncoding(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        value: ByteArray,
-        writeType: Int?
-    ) {
+    actual fun writeCharacteristicWithoutEncoding(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, value: ByteArray, writeType: Int?) {
         sharedWriteCharacteristic(
             bluetoothPeripheral,
             bluetoothCharacteristic,
@@ -141,12 +197,7 @@ actual class BlueFalcon actual constructor(
         )
     }
 
-    private fun sharedWriteCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        value: NSString,
-        writeType: Int?
-    ) {
+    private fun sharedWriteCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, value: NSString, writeType: Int?) {
         value.dataUsingEncoding(NSUTF8StringEncoding)?.let {
             sharedWriteCharacteristic(
                 bluetoothPeripheral,
@@ -157,12 +208,7 @@ actual class BlueFalcon actual constructor(
         }
     }
 
-    private fun sharedWriteCharacteristic(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        value: NSData,
-        writeType: Int?
-    ) {
+    private fun sharedWriteCharacteristic(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, value: NSData, writeType: Int?) {
         bluetoothPeripheral.bluetoothDevice.writeValue(
             value,
             bluetoothCharacteristic.characteristic,
@@ -173,11 +219,7 @@ actual class BlueFalcon actual constructor(
         )
     }
 
-    actual fun readDescriptor(
-        bluetoothPeripheral: BluetoothPeripheral,
-        bluetoothCharacteristic: BluetoothCharacteristic,
-        bluetoothCharacteristicDescriptor: BluetoothCharacteristicDescriptor
-    ) {
+    actual fun readDescriptor(bluetoothPeripheral: BluetoothPeripheral, bluetoothCharacteristic: BluetoothCharacteristic, bluetoothCharacteristicDescriptor: BluetoothCharacteristicDescriptor) {
         bluetoothPeripheral.bluetoothDevice.discoverDescriptorsForCharacteristic(bluetoothCharacteristic.characteristic)
     }
 
@@ -187,5 +229,4 @@ actual class BlueFalcon actual constructor(
             it.didUpdateMTU(bluetoothPeripheral)
         }
     }
-
 }

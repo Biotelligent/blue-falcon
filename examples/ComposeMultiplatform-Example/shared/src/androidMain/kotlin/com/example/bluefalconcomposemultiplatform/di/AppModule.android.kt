@@ -8,5 +8,5 @@ actual class AppModule(
     private val context: Context
 ) {
     actual val blueFalcon: BlueFalcon
-        get() = BlueFalcon(context as ApplicationContext, null)
+        get() = BlueFalcon(context as ApplicationContext, "4775DD3A-3BB7-4E23-9E4E-91A20D43E491")
 }

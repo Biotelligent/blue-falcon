@@ -1,6 +1,7 @@
+/** @suppress */
 enum class AdvertisementDataRetrievalKeys {
     LocalName,
     ManufacturerData,
     ServiceUUIDsKey,
-    IsConnectable,
+    IsConnectable
 }

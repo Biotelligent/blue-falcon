@@ -1,7 +1,3 @@
 package dev.bluefalcon
 
-import android.util.Log
-
-actual fun log(message: String) {
-    Log.i("BlueFalcon", message)
-}
+actual fun log(message: String) = if (isDebug) println( "BTBF $message" ) else {}

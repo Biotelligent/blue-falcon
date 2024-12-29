@@ -44,6 +44,7 @@ val kotlinx_coroutines_version: String by project
 android {
     compileSdk = 33
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
+    namespace = "dev.bluefalcon.blueFalcon"
     defaultConfig {
         minSdk = 24
         targetSdk = 33
@@ -56,6 +57,7 @@ android {
 val frameworkName = "BlueFalcon"
 
 kotlin {
+    jvmToolchain(17)
     androidTarget {
         publishAllLibraryVariants()
     }
@@ -99,6 +101,7 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinx_coroutines_version")
+                implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.1")
             }
         }
         val commonTest by getting {
@@ -131,6 +134,9 @@ kotlin {
             dependsOn(macosMain)
         }
     }
+}
+dependencies {
+    implementation("androidx.core:core:1.15.0")
 }
 
 fun SigningExtension.whenRequired(block: () -> Boolean) {
@@ -190,10 +196,16 @@ publishing {
 
 }
 
+afterEvaluate {
 signing {
     whenRequired { gradle.taskGraph.hasTask("publish") }
     val signingKey: String? by project
     val signingPassword: String? by project
     useInMemoryPgpKeys(signingKey, signingPassword)
     sign(publishing.publications)
+    }
+}
+tasks.withType<AbstractPublishToMaven>().configureEach {
+    val signingTasks = tasks.withType<Sign>()
+    mustRunAfter(signingTasks)
 }

@@ -1,3 +1,5 @@
+@file:Suppress("UNCHECKED_CAST")
+
 package dev.bluefalcon
 
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -11,19 +13,22 @@ import platform.posix.memcpy
 actual class BluetoothCharacteristic(val characteristic: CBCharacteristic) {
     actual val name: String?
         get() = characteristic.UUID.UUIDString
+
     @OptIn(ExperimentalForeignApi::class)
     actual val value: ByteArray?
-        get() = characteristic.value?.let { data ->
-            ByteArray(data.length.toInt()).apply {
-                usePinned {
-                    memcpy(it.addressOf(0), data.bytes, data.length)
+        get() =
+            characteristic.value?.let { data ->
+                ByteArray(data.length.toInt()).apply {
+                    usePinned {
+                        memcpy(it.addressOf(0), data.bytes, data.length)
+                    }
                 }
             }
-        }
+
     actual val descriptors: List<BluetoothCharacteristicDescriptor>
         get() = characteristic.descriptors as List<BluetoothCharacteristicDescriptor>
 
-    internal actual val _descriptorsFlow = MutableStateFlow<List<BluetoothCharacteristicDescriptor>>(emptyList())
+    internal actual val descriptorsFlow = MutableStateFlow<List<BluetoothCharacteristicDescriptor>>(emptyList())
 }
 
-actual typealias  BluetoothCharacteristicDescriptor = CBDescriptor
+actual typealias BluetoothCharacteristicDescriptor = CBDescriptor
